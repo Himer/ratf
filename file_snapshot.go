@@ -26,16 +26,23 @@ import (
 	hclog "github.com/hashicorp/go-hclog"
 )
 
+
+//----snapshots
+//-------------1-222-3333333.tmp
+//--------------------------meta.json
+//--------------------------state.bin
 const (
-	testPath      = "permTest"
-	snapPath      = "snapshots"
-	metaFilePath  = "meta.json"
-	stateFilePath = "state.bin"
-	tmpSuffix     = ".tmp"
+	testPath      = "permTest"  //用于测试镜像群路径可写的文件名字
+	snapPath      = "snapshots" //镜像群的路径
+	metaFilePath  = "meta.json" //一个镜像的meta信息
+	stateFilePath = "state.bin" //一个镜像的数据
+	tmpSuffix     = ".tmp"  //临时镜像的目录名字
 )
 
 // FileSnapshotStore implements the SnapshotStore interface and allows
 // snapshots to be made on the local disk.
+//FileSnapshotStore代表一坨 文件列表表示的镜像群
+// FileSnapshotSink表示一个个镜像每个任期有一个
 type FileSnapshotStore struct {
 	path   string    /*目录*/
 	retain int     /*保留个数*/
@@ -46,14 +53,18 @@ type FileSnapshotStore struct {
 	noSync bool
 }
 
+//snapMetaSlice用户对meta信息进行排序
+// 先按照任期配置
+// 如果任期一样则按照日志index排序
+// 如果日志index也一样 按照文件的meta文件的名字排序(其实就是文件名字里边的毫秒数)
 type snapMetaSlice []*fileSnapshotMeta
 
 // FileSnapshotSink implements SnapshotSink with a file.
 type FileSnapshotSink struct {
-	store     *FileSnapshotStore
-	logger    hclog.Logger
-	dir       string
-	parentDir string
+	store     *FileSnapshotStore //镜像群
+	logger    hclog.Logger  //日志
+	dir       string  //这个镜像的路径
+	parentDir string //镜像群的路径
 	meta      fileSnapshotMeta
 
 	noSync bool
@@ -191,7 +202,7 @@ func (f *FileSnapshotStore) Create(version SnapshotVersion, index, term uint64,
 		return nil, err
 	}
 
-	// Create the sink
+	// Create the sink sink==落地的意思?
 	sink := &FileSnapshotSink{
 		store:     f,
 		logger:    f.logger,
@@ -262,8 +273,11 @@ func (f *FileSnapshotStore) List() ([]*SnapshotMeta, error) {
 }
 
 // getSnapshots returns all the known snapshots.
+//得到所有镜像的meta信息组成的数据
+//meta信息通过读取所有的 xxxxxxxxxxxxxxxxx/snapshots/任期-日志编号-微秒数/meta.json 得到
 func (f *FileSnapshotStore) getSnapshots() ([]*fileSnapshotMeta, error) {
 	// Get the eligible snapshots
+	//得到所有的xxxxxxxxxxxxxxxxx/snapshots/任期-日志编号-微秒数
 	snapshots, err := ioutil.ReadDir(f.path)
 	if err != nil {
 		f.logger.Error("failed to scan snapshot directory", "error", err)
@@ -293,6 +307,7 @@ func (f *FileSnapshotStore) getSnapshots() ([]*fileSnapshotMeta, error) {
 		}
 
 		// Make sure we can understand this version.
+		//现在仅支持 0 1 版本
 		if meta.Version < SnapshotVersionMin || meta.Version > SnapshotVersionMax {
 			f.logger.Warn("snapshot version not supported", "name", dirName, "version", meta.Version)
 			continue
@@ -303,12 +318,17 @@ func (f *FileSnapshotStore) getSnapshots() ([]*fileSnapshotMeta, error) {
 	}
 
 	// Sort the snapshot, reverse so we get new -> old
+	//排序后还没有改变原来的数据类型slice
+	//类型转换后排序新类型  新类型和老类型内存一样   老的类型内存也变动
+
 	sort.Sort(sort.Reverse(snapMetaSlice(snapMeta)))
 
 	return snapMeta, nil
 }
 
 // readMeta is used to read the meta data for a given named backup
+//从xxxxxxxxxxxxxxxxx/snapshots/任期-日志编号-微秒数/meta.json中读取镜像的meta信息
+//传的参数 name 就是任期-日志编号-微秒数
 func (f *FileSnapshotStore) readMeta(name string) (*fileSnapshotMeta, error) {
 	// Open the meta file
 	metaPath := filepath.Join(f.path, name, metaFilePath)
@@ -322,6 +342,7 @@ func (f *FileSnapshotStore) readMeta(name string) (*fileSnapshotMeta, error) {
 	buffered := bufio.NewReader(fh)
 
 	// Read in the JSON
+	//直接从文件json反序列化成fileSnapshotMeta结构体
 	meta := &fileSnapshotMeta{}
 	dec := json.NewDecoder(buffered)
 	if err := dec.Decode(meta); err != nil {
@@ -331,6 +352,7 @@ func (f *FileSnapshotStore) readMeta(name string) (*fileSnapshotMeta, error) {
 }
 
 // Open takes a snapshot ID and returns a ReadCloser for that snapshot.
+//打开一个镜像,返回镜像meta信息和  read+close接口对象(fd)
 func (f *FileSnapshotStore) Open(id string) (*SnapshotMeta, io.ReadCloser, error) {
 	// Get the metadata
 	meta, err := f.readMeta(id)
@@ -348,6 +370,7 @@ func (f *FileSnapshotStore) Open(id string) (*SnapshotMeta, io.ReadCloser, error
 	}
 
 	// Create a CRC64 hash
+	//计算state文件的crc64
 	stateHash := crc64.New(crc64.MakeTable(crc64.ECMA))
 
 	// Compute the hash
@@ -359,6 +382,7 @@ func (f *FileSnapshotStore) Open(id string) (*SnapshotMeta, io.ReadCloser, error
 	}
 
 	// Verify the hash
+	//比较state文件的crc64和meta记录的crc64是否一致
 	computed := stateHash.Sum(nil)
 	if bytes.Compare(meta.CRC, computed) != 0 {
 		f.logger.Error("CRC checksum failed", "stored", meta.CRC, "computed", computed)
@@ -367,6 +391,7 @@ func (f *FileSnapshotStore) Open(id string) (*SnapshotMeta, io.ReadCloser, error
 	}
 
 	// Seek to the start
+	//移动到文件开始
 	if _, err := fh.Seek(0, 0); err != nil {
 		f.logger.Error("state file seek failed", "error", err)
 		fh.Close()
@@ -374,6 +399,10 @@ func (f *FileSnapshotStore) Open(id string) (*SnapshotMeta, io.ReadCloser, error
 	}
 
 	// Return a buffered file
+	//返回了一个实现  read close的对象
+	//read还是bufio 结合比较巧妙
+	// 系统自带的bufio是不支持close操作的  如果在系统里边传回就没法close了
+	//而fd的读缓存比较弱
 	buffered := &bufferedFile{
 		bh: bufio.NewReader(fh),
 		fh: fh,

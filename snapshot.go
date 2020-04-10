@@ -9,6 +9,7 @@ import (
 )
 
 // SnapshotMeta is for metadata of a snapshot.
+//一个镜像的meta信息
 type SnapshotMeta struct {
 	// Version is the version number of the snapshot metadata. This does not cover
 	// the application's data in the snapshot, that should be versioned
@@ -16,10 +17,13 @@ type SnapshotMeta struct {
 	Version SnapshotVersion
 
 	// ID is opaque to the store, and is used for opening.
+	//在镜像群中的标识   如在用文件作为落地的方式中  为文件的名字(任期-日志编号-微秒数)
 	ID string
 
 	// Index and Term store when the snapshot was taken.
+	//这个镜像被创建的日志index
 	Index uint64
+	//这个镜像被创建时候的任期
 	Term  uint64
 
 	// Peers is deprecated and used to support version 0 snapshots, but will
@@ -28,10 +32,12 @@ type SnapshotMeta struct {
 
 	// Configuration and ConfigurationIndex are present in version 1
 	// snapshots and later.
+	//此时raft集群的服务器列表
 	Configuration      Configuration
 	ConfigurationIndex uint64
 
 	// Size is the size of the snapshot in bytes.
+	//这个镜像的大小
 	Size int64
 }
 
@@ -57,6 +63,7 @@ type SnapshotStore interface {
 
 // SnapshotSink is returned by StartSnapshot. The FSM will Write state
 // to the sink and call Close on completion. On error, Cancel will be invoked.
+//镜像实现了 write和close接口
 type SnapshotSink interface {
 	io.WriteCloser
 	ID() string
