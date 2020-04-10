@@ -1,5 +1,12 @@
 package raft
 
+//       SnapshotStore用来存储快照信息，对于stcache来说，就是存储当前的所有的kv数据，hashicorp内部提供3中快照存储方式，分别是：
+//
+//DiscardSnapshotStore：  不存储，忽略快照，相当于/dev/null，一般用于测试
+//FileSnapshotStore：        文件持久化存储
+//InmemSnapshotStore：   内存存储，不持久化，重启程序会丢失
+//
+//​       这里我们使用文件持久化存储。snapshotStore只是提供了一个快照存储的介质，还需要应用程序提供快照生成的方式，后面我们再具体说。
 import (
 	"bufio"
 	"bytes"
@@ -30,9 +37,9 @@ const (
 // FileSnapshotStore implements the SnapshotStore interface and allows
 // snapshots to be made on the local disk.
 type FileSnapshotStore struct {
-	path   string
-	retain int
-	logger hclog.Logger
+	path   string    /*目录*/
+	retain int     /*保留个数*/
+	logger hclog.Logger   /*日志输出*/
 
 	// noSync, if true, skips crash-safe file fsync api calls.
 	// It's a private field, only used in testing
@@ -53,7 +60,8 @@ type FileSnapshotSink struct {
 
 	stateFile *os.File
 	stateHash hash.Hash64
-	buffered  *bufio.Writer
+	buffered  *bufio.Writer  /*是个multiwrite  一个write落地状态state文件(就是stateFile属性)  一个write来计算crc64(就是stateHash属性)
+	buffered = bufio.NewWriter(io.MultiWriter(sink.stateFile, sink.stateHash))*/
 
 	closed bool
 }
@@ -83,6 +91,7 @@ func (b *bufferedFile) Close() error {
 // NewFileSnapshotStoreWithLogger creates a new FileSnapshotStore based
 // on a base directory. The `retain` parameter controls how many
 // snapshots are retained. Must be at least 1.
+//创建一个文件快照存储 还带有程序log功能 retain是确定保存多少个
 func NewFileSnapshotStoreWithLogger(base string, retain int, logger hclog.Logger) (*FileSnapshotStore, error) {
 	if retain < 1 {
 		return nil, fmt.Errorf("must retain at least one snapshot")
@@ -96,7 +105,10 @@ func NewFileSnapshotStoreWithLogger(base string, retain int, logger hclog.Logger
 	}
 
 	// Ensure our path exists
+	//"xxxxxxxxxxxxxxxxx/snapshots"目录
 	path := filepath.Join(base, snapPath)
+
+	//创建目录
 	if err := os.MkdirAll(path, 0755); err != nil && !os.IsExist(err) {
 		return nil, fmt.Errorf("snapshot path not accessible: %v", err)
 	}
@@ -109,6 +121,7 @@ func NewFileSnapshotStoreWithLogger(base string, retain int, logger hclog.Logger
 	}
 
 	// Do a permissions test
+	//测试目录权限
 	if err := store.testPermissions(); err != nil {
 		return nil, fmt.Errorf("permissions test failed: %v", err)
 	}
@@ -118,6 +131,7 @@ func NewFileSnapshotStoreWithLogger(base string, retain int, logger hclog.Logger
 // NewFileSnapshotStore creates a new FileSnapshotStore based
 // on a base directory. The `retain` parameter controls how many
 // snapshots are retained. Must be at least 1.
+//创建一个文件快照存储 还带有程序log功能  程序log打印到stderr retain是确定保存多少个
 func NewFileSnapshotStore(base string, retain int, logOutput io.Writer) (*FileSnapshotStore, error) {
 	if logOutput == nil {
 		logOutput = os.Stderr
@@ -130,6 +144,7 @@ func NewFileSnapshotStore(base string, retain int, logOutput io.Writer) (*FileSn
 }
 
 // testPermissions tries to touch a file in our path to see if it works.
+//在目录创建个文件xxxxxxx/permTest 后删除  来测试目录可创建+可删除
 func (f *FileSnapshotStore) testPermissions() error {
 	path := filepath.Join(f.path, testPath)
 	fh, err := os.Create(path)
@@ -148,6 +163,7 @@ func (f *FileSnapshotStore) testPermissions() error {
 }
 
 // snapshotName generates a name for the snapshot.
+//返回个快照文件的名字   任期-日志编号-微秒数
 func snapshotName(term, index uint64) string {
 	now := time.Now()
 	msec := now.UnixNano() / int64(time.Millisecond)
@@ -165,6 +181,8 @@ func (f *FileSnapshotStore) Create(version SnapshotVersion, index, term uint64,
 	// Create a new path
 	name := snapshotName(term, index)
 	path := filepath.Join(f.path, name+tmpSuffix)
+
+	//path == xxxxxxxxxxxxxxxxx/snapshots/任期-日志编号-微秒数.tmp(这竟然是个目录)
 	f.logger.Info("creating new snapshot", "path", path)
 
 	// Make the directory
@@ -201,6 +219,7 @@ func (f *FileSnapshotStore) Create(version SnapshotVersion, index, term uint64,
 	}
 
 	// Open the state file
+	//xxxxxxxxxxxxxxxxx/snapshots/任期-日志编号-微秒数.tmp/state.bin
 	statePath := filepath.Join(path, stateFilePath)
 	fh, err := os.Create(statePath)
 	if err != nil {
@@ -213,6 +232,9 @@ func (f *FileSnapshotStore) Create(version SnapshotVersion, index, term uint64,
 	sink.stateHash = crc64.New(crc64.MakeTable(crc64.ECMA))
 
 	// Wrap both the hash and file in a MultiWriter with buffering
+	//2个writer合并在一起组成一个write (MultiWriter)  对MultiWriter写数据会并发写入2个writer
+	//这2个writer 一个是上面的stateFile文件句柄
+	//一个是crc64的write用来计算crc64
 	multi := io.MultiWriter(sink.stateFile, sink.stateHash)
 	sink.buffered = bufio.NewWriter(multi)
 
