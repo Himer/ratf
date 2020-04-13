@@ -25,12 +25,19 @@ func (r *RPC) Respond(resp interface{}, err error) {
 
 // Transport provides an interface for network transports
 // to allow Raft to communicate with other nodes.
+/*
+Transport是raft集群内部节点之间的通信渠道，节点之间需要通过这个通道来进行日志同步、leader选举等。
+hashicorp/raft内部提供了两种方式来实现，一种是通过TCPTransport，基于tcp，可以跨机器跨网络通信；
+另一种是InmemTransport，不走网络，在内存里面通过channel来通信
+*/
 type Transport interface {
 	// Consumer returns a channel that can be used to
 	// consume and respond to RPC requests.
+	//consumer提供一个消费rpc请求的channel
 	Consumer() <-chan RPC
 
 	// LocalAddr is used to return our local address to distinguish from our peers.
+	//本node提供服务的地址
 	LocalAddr() ServerAddress
 
 	// AppendEntriesPipeline returns an interface that can be used to pipeline
@@ -38,28 +45,35 @@ type Transport interface {
 	AppendEntriesPipeline(id ServerID, target ServerAddress) (AppendPipeline, error)
 
 	// AppendEntries sends the appropriate RPC to the target node.
+	//发送条目到对应的target机器
 	AppendEntries(id ServerID, target ServerAddress, args *AppendEntriesRequest, resp *AppendEntriesResponse) error
 
 	// RequestVote sends the appropriate RPC to the target node.
+	//RequestVote 选举target
 	RequestVote(id ServerID, target ServerAddress, args *RequestVoteRequest, resp *RequestVoteResponse) error
 
 	// InstallSnapshot is used to push a snapshot down to a follower. The data is read from
 	// the ReadCloser and streamed to the client.
+	//想对应的节点发送一个镜像
 	InstallSnapshot(id ServerID, target ServerAddress, args *InstallSnapshotRequest, resp *InstallSnapshotResponse, data io.Reader) error
 
 	// EncodePeer is used to serialize a peer's address.
+	//将一个节点地址进行序列化
 	EncodePeer(id ServerID, addr ServerAddress) []byte
 
 	// DecodePeer is used to deserialize a peer's address.
+	//对网络地址进行反序列化
 	DecodePeer([]byte) ServerAddress
 
 	// SetHeartbeatHandler is used to setup a heartbeat handler
 	// as a fast-pass. This is to avoid head-of-line blocking from
 	// disk IO. If a Transport does not support this, it can simply
 	// ignore the call, and push the heartbeat onto the Consumer channel.
+	//心跳的请求快速处理(上了fast pass,快速通过 高速公路)
 	SetHeartbeatHandler(cb func(rpc RPC))
 
 	// TimeoutNow is used to start a leadership transfer to the target node.
+	//对target发起leader选举
 	TimeoutNow(id ServerID, target ServerAddress, args *TimeoutNowRequest, resp *TimeoutNowResponse) error
 }
 
@@ -69,6 +83,7 @@ type Transport interface {
 //
 // It is defined separately from Transport as unfortunately it wasn't in the
 // original interface specification.
+//transport需要实现的关闭接口
 type WithClose interface {
 	// Close permanently closes a transport, stopping
 	// any associated goroutines and freeing other resources.
@@ -98,13 +113,16 @@ type WithPeers interface {
 type AppendPipeline interface {
 	// AppendEntries is used to add another request to the pipeline.
 	// The send may block which is an effective form of back-pressure.
+	//发出去append 条目请求
 	AppendEntries(args *AppendEntriesRequest, resp *AppendEntriesResponse) (AppendFuture, error)
 
 	// Consumer returns a channel that can be used to consume
 	// response futures when they are ready.
+	//接收到到append请求
 	Consumer() <-chan AppendFuture
 
 	// Close closes the pipeline and cancels all inflight RPCs
+	//关闭管道
 	Close() error
 }
 

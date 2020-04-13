@@ -10,6 +10,7 @@ import (
 
 // InmemSnapshotStore implements the SnapshotStore interface and
 // retains only the most recent snapshot
+//内存Snapshot只存储最近的一个镜像
 type InmemSnapshotStore struct {
 	latest      *InmemSnapshotSink
 	hasSnapshot bool
@@ -84,12 +85,15 @@ func (m *InmemSnapshotStore) Open(id string) (*SnapshotMeta, io.ReadCloser, erro
 
 	// Make a copy of the contents, since a bytes.Buffer can only be read
 	// once.
+	//bytes.Buffer的内容只能读取一次, 所以创建一个信息buffer将内容放入
 	contents := bytes.NewBuffer(m.latest.contents.Bytes())
+	//ioutil.NopCloser 将一个read 包装成 readclose
 	return &m.latest.meta, ioutil.NopCloser(contents), nil
 }
 
 // Write appends the given bytes to the snapshot contents
 func (s *InmemSnapshotSink) Write(p []byte) (n int, err error) {
+	//这种方式效率底下 不如换成s.contents.write(p),不知道他们怎么想的
 	written, err := io.Copy(s.contents, bytes.NewReader(p))
 	s.meta.Size += written
 	return int(written), err

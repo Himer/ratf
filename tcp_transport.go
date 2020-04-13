@@ -1,3 +1,4 @@
+
 package raft
 
 import (
@@ -7,6 +8,7 @@ import (
 	"net"
 	"time"
 )
+
 
 var (
 	errNotAdvertisable = errors.New("local bind address is not advertisable")
