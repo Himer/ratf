@@ -254,6 +254,7 @@ func (f *FileSnapshotStore) Create(version SnapshotVersion, index, term uint64,
 }
 
 // List returns available snapshots in the store.
+//得到所有的镜像的meta信息
 func (f *FileSnapshotStore) List() ([]*SnapshotMeta, error) {
 	// Get the eligible snapshots
 	snapshots, err := f.getSnapshots()
@@ -265,6 +266,7 @@ func (f *FileSnapshotStore) List() ([]*SnapshotMeta, error) {
 	var snapMeta []*SnapshotMeta
 	for _, meta := range snapshots {
 		snapMeta = append(snapMeta, &meta.SnapshotMeta)
+		//只返回retain保留数量的镜像meta
 		if len(snapMeta) == f.retain {
 			break
 		}
@@ -321,6 +323,7 @@ func (f *FileSnapshotStore) getSnapshots() ([]*fileSnapshotMeta, error) {
 	//排序后还没有改变原来的数据类型slice
 	//类型转换后排序新类型  新类型和老类型内存一样   老的类型内存也变动
 
+	//排序的原因是后期要根据retain参数 返回保留的几个
 	sort.Sort(sort.Reverse(snapMetaSlice(snapMeta)))
 
 	return snapMeta, nil
@@ -412,6 +415,7 @@ func (f *FileSnapshotStore) Open(id string) (*SnapshotMeta, io.ReadCloser, error
 }
 
 // ReapSnapshots reaps any snapshots beyond the retain count.
+//删除retain数量后的镜像文件夹
 func (f *FileSnapshotStore) ReapSnapshots() error {
 	snapshots, err := f.getSnapshots()
 	if err != nil {
@@ -422,6 +426,7 @@ func (f *FileSnapshotStore) ReapSnapshots() error {
 	for i := f.retain; i < len(snapshots); i++ {
 		path := filepath.Join(f.path, snapshots[i].ID)
 		f.logger.Info("reaping snapshot", "path", path)
+		//删除retain后的镜像文件夹
 		if err := os.RemoveAll(path); err != nil {
 			f.logger.Error("failed to reap snapshot", "path", path, "error", err)
 			return err
@@ -432,17 +437,20 @@ func (f *FileSnapshotStore) ReapSnapshots() error {
 
 // ID returns the ID of the snapshot, can be used with Open()
 // after the snapshot is finalized.
+//返回这个文件的id
 func (s *FileSnapshotSink) ID() string {
 	return s.meta.ID
 }
 
 // Write is used to append to the state file. We write to the
 // buffered IO object to reduce the amount of context switches.
+//写数据到state文件,
 func (s *FileSnapshotSink) Write(b []byte) (int, error) {
 	return s.buffered.Write(b)
 }
 
 // Close is used to indicate a successful end.
+//关闭这个镜像文件
 func (s *FileSnapshotSink) Close() error {
 	// Make sure close is idempotent
 	if s.closed {
@@ -451,6 +459,7 @@ func (s *FileSnapshotSink) Close() error {
 	s.closed = true
 
 	// Close the open handles
+	//文件刷新到硬盘和计算出meta文件需要的size和crc64
 	if err := s.finalize(); err != nil {
 		s.logger.Error("failed to finalize snapshot", "error", err)
 		if delErr := os.RemoveAll(s.dir); delErr != nil {
@@ -461,18 +470,23 @@ func (s *FileSnapshotSink) Close() error {
 	}
 
 	// Write out the meta data
+	//meta json后写到meta文件里边
 	if err := s.writeMeta(); err != nil {
 		s.logger.Error("failed to write metadata", "error", err)
 		return err
 	}
 
 	// Move the directory into place
+	//去掉镜像路径的tmp字段
+	//xxxxxxxxxxxxxxxxx/snapshots/任期-日志编号-微秒数.tmp/xxxx -->
+	// xxxxxxxxxxxxxxxxx/snapshots/任期-日志编号-微秒数/xxxx
 	newPath := strings.TrimSuffix(s.dir, tmpSuffix)
 	if err := os.Rename(s.dir, newPath); err != nil {
 		s.logger.Error("failed to move snapshot into place", "error", err)
 		return err
 	}
 
+	//文件夹的变动也要Sync到硬盘???????
 	if !s.noSync && runtime.GOOS != "windows" { // skipping fsync for directory entry edits on Windows, only needed for *nix style file systems
 		parentFH, err := os.Open(s.parentDir)
 		defer parentFH.Close()
@@ -488,6 +502,7 @@ func (s *FileSnapshotSink) Close() error {
 	}
 
 	// Reap any old snapshots
+	//去除就的镜像文件 滚动镜像文件夹的数量
 	if err := s.store.ReapSnapshots(); err != nil {
 		return err
 	}
@@ -496,6 +511,8 @@ func (s *FileSnapshotSink) Close() error {
 }
 
 // Cancel is used to indicate an unsuccessful end.
+// 删除(取消)当前的镜像任务, 删除本次的state文件
+//难道是一个提交一个镜像文件?
 func (s *FileSnapshotSink) Cancel() error {
 	// Make sure close is idempotent
 	if s.closed {
@@ -514,13 +531,18 @@ func (s *FileSnapshotSink) Cancel() error {
 }
 
 // finalize is used to close all of our resources.
+//文件刷新到硬盘和计算出meta文件需要的size和crc64
 func (s *FileSnapshotSink) finalize() error {
 	// Flush any remaining data
+	//将state文件flush到硬盘
+	//Flush 将数据写入基础缓冲区
+	// Sync 所数据写入基础文件
 	if err := s.buffered.Flush(); err != nil {
 		return err
 	}
 
 	// Sync to force fsync to disk
+	//强制文件写到硬盘
 	if !s.noSync {
 		if err := s.stateFile.Sync(); err != nil {
 			return err
@@ -539,6 +561,7 @@ func (s *FileSnapshotSink) finalize() error {
 	if statErr != nil {
 		return statErr
 	}
+	//取得state文件的大小和crc64的值
 	s.meta.Size = stat.Size()
 
 	// Set the CRC
@@ -550,6 +573,7 @@ func (s *FileSnapshotSink) finalize() error {
 func (s *FileSnapshotSink) writeMeta() error {
 	var err error
 	// Open the meta file
+	//创建meta文件
 	metaPath := filepath.Join(s.dir, metaFilePath)
 	var fh *os.File
 	fh, err = os.Create(metaPath)
@@ -562,6 +586,8 @@ func (s *FileSnapshotSink) writeMeta() error {
 	buffered := bufio.NewWriter(fh)
 
 	// Write out as JSON
+
+	//将meta信息json编码写到meta文件里边  落地硬盘
 	enc := json.NewEncoder(buffered)
 	if err = enc.Encode(&s.meta); err != nil {
 		return err
