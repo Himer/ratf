@@ -17,8 +17,8 @@ var (
 
 // TCPStreamLayer implements StreamLayer interface for plain TCP.
 type TCPStreamLayer struct {
-	advertise net.Addr
-	listener  *net.TCPListener
+	advertise net.Addr   /*广播的地址*/
+	listener  *net.TCPListener  /*监控的地址*/
 }
 
 // NewTCPTransport returns a NetworkTransport that is built on top of
@@ -63,7 +63,7 @@ func NewTCPTransportWithConfig(
 }
 
 func newTCPTransport(bindAddr string,
-	advertise net.Addr,
+	advertise net.Addr, /* net.Addr 是个接口 又协议名(tcp,udp)和地址(127.0.0.1:80)组成, *net.TCPAddr和*net.UDPAddr实现了这个接口 */
 	transportCreator func(stream StreamLayer) *NetworkTransport) (*NetworkTransport, error) {
 	// Try to bind
 	list, err := net.Listen("tcp", bindAddr)
@@ -72,17 +72,21 @@ func newTCPTransport(bindAddr string,
 	}
 
 	// Create stream
+	// stream 感觉就像是个打开了(还没有)个tcp socket
 	stream := &TCPStreamLayer{
 		advertise: advertise,
 		listener:  list.(*net.TCPListener),
 	}
-
 	// Verify that we have a usable advertise address
+	//net.TCPAddr 可以认为是有ip(127.0.0.1)和端口(80)组成
+	//*net.TCPAddr
 	addr, ok := stream.Addr().(*net.TCPAddr)
 	if !ok {
 		list.Close()
 		return nil, errNotTCP
 	}
+	//IsUnspecified判断ip是否是 0.0.0.0 这样的地址
+	//此处 如果我们监听的地址是 0.0.0.0:8080  而没有提供广播地址则会在此出错
 	if addr.IP.IsUnspecified() {
 		list.Close()
 		return nil, errNotAdvertisable
@@ -94,16 +98,19 @@ func newTCPTransport(bindAddr string,
 }
 
 // Dial implements the StreamLayer interface.
+//发起tcp连接
 func (t *TCPStreamLayer) Dial(address ServerAddress, timeout time.Duration) (net.Conn, error) {
 	return net.DialTimeout("tcp", string(address), timeout)
 }
 
 // Accept implements the net.Listener interface.
+//接收tcp请求
 func (t *TCPStreamLayer) Accept() (c net.Conn, err error) {
 	return t.listener.Accept()
 }
 
 // Close implements the net.Listener interface.
+//关闭tcp请求
 func (t *TCPStreamLayer) Close() (err error) {
 	return t.listener.Close()
 }
@@ -111,8 +118,10 @@ func (t *TCPStreamLayer) Close() (err error) {
 // Addr implements the net.Listener interface.
 func (t *TCPStreamLayer) Addr() net.Addr {
 	// Use an advertise addr if provided
+	//如果提供了 建议广播的地址  则使用这个
 	if t.advertise != nil {
 		return t.advertise
 	}
+	//如果没有提供广播地址  则使用bind tcp的服务地址
 	return t.listener.Addr()
 }

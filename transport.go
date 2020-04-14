@@ -34,6 +34,7 @@ type Transport interface {
 	// Consumer returns a channel that can be used to
 	// consume and respond to RPC requests.
 	//consumer提供一个消费rpc请求的channel
+	//NewRaft的时候 这个chan会赋值给raft 的rpcCh   raft会对数据进行处理
 	Consumer() <-chan RPC
 
 	// LocalAddr is used to return our local address to distinguish from our peers.
@@ -42,10 +43,15 @@ type Transport interface {
 
 	// AppendEntriesPipeline returns an interface that can be used to pipeline
 	// AppendEntries requests.
+	//功能类似AppendEntries   但与这个作用是 可以对conn创建增加日志条目的管道
+	// 而不像Transport的AppendEntries那样 没有AppendEntries执行完 conn连接都会放到缓存池子里边 下次AppendEntries需要从缓冲池中得到conn
+	//如果频繁对某个conn 增加日志条目 这个方式更节省了时间 增加了吞吐
 	AppendEntriesPipeline(id ServerID, target ServerAddress) (AppendPipeline, error)
 
 	// AppendEntries sends the appropriate RPC to the target node.
 	//发送条目到对应的target机器
+	//会通过id这个server id得到连接地址,如果找不到则采用target作为连接地址
+	//发送完成后 id或者target对应的连接会进入到连接池里边等到下个请求使用
 	AppendEntries(id ServerID, target ServerAddress, args *AppendEntriesRequest, resp *AppendEntriesResponse) error
 
 	// RequestVote sends the appropriate RPC to the target node.
@@ -110,6 +116,9 @@ type WithPeers interface {
 // AppendPipeline is used for pipelining AppendEntries requests. It is used
 // to increase the replication throughput by masking latency and better
 // utilizing bandwidth.
+//这个作用是 可以对conn创建增加日志条目的管道
+// 而不像Transport的AppendEntries那样 没有AppendEntries执行完 conn连接都会放到缓存池子里边 下次AppendEntries需要从缓冲池中得到conn
+//这个节省了时间 增加了吞吐
 type AppendPipeline interface {
 	// AppendEntries is used to add another request to the pipeline.
 	// The send may block which is an effective form of back-pressure.
