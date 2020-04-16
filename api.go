@@ -94,6 +94,7 @@ type Raft struct {
 	// restores so that we finish applying any old log applies before we
 	// take a user snapshot on the leader, otherwise we might restore the
 	// snapshot and apply old logs to it that were in the pipe.
+	//对FSM发送命令的channel
 	fsmMutateCh chan interface{}
 
 	// fsmSnapshotCh is used to trigger a new snapshot being taken

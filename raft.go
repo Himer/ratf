@@ -73,6 +73,7 @@ func getSnapshotVersion(protocolVersion ProtocolVersion) SnapshotVersion {
 
 // commitTuple is used to send an index that was committed,
 // with an optional associated future that should be invoked.
+//提交的log  logFuture有channel可以保证这个log完成
 type commitTuple struct {
 	log    *Log
 	future *logFuture
@@ -123,6 +124,7 @@ func (r *Raft) requestConfigChange(req configurationChangeRequest, timeout time.
 }
 
 // run is a long running goroutine that runs the Raft FSM.
+//
 func (r *Raft) run() {
 	for {
 		// Check if we are doing a shutdown
