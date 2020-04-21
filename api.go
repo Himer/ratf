@@ -30,14 +30,17 @@ const (
 var (
 	// ErrLeader is returned when an operation can't be completed on a
 	// leader node.
+	//当一个leader完成不了这个任务的时候返回
 	ErrLeader = errors.New("node is the leader")
 
 	// ErrNotLeader is returned when an operation can't be completed on a
 	// follower or candidate node.
+	//在follower 或者 candidate节点不能完成任务
 	ErrNotLeader = errors.New("node is not the leader")
 
 	// ErrLeadershipLost is returned when a leader fails to commit a log entry
 	// because it's been deposed in the process.
+	//当提交任务的时候 丢失leader群星
 	ErrLeadershipLost = errors.New("leadership lost while committing log")
 
 	// ErrAbortedByRestore is returned when a leader fails to commit a log
@@ -70,11 +73,13 @@ var (
 
 // Raft implements a Raft node.
 type Raft struct {
+	//本raft节点的状态
 	raftState
 
 	// protocolVersion is used to inter-operate with Raft servers running
 	// different versions of the library. See comments in config.go for more
 	// details.
+	//协议版本号
 	protocolVersion ProtocolVersion
 
 	// applyCh is used to async send logs to the main thread to
@@ -102,38 +107,48 @@ type Raft struct {
 
 	// lastContact is the last time we had contact from the
 	// leader node. This can be used to gauge staleness.
+	//lastContact 是此node与leader最后更新的时间
 	lastContact     time.Time
 	lastContactLock sync.RWMutex
 
 	// Leader is the current cluster leader
+	//leader是现在的leader
 	leader     ServerAddress
 	leaderLock sync.RWMutex
 
 	// leaderCh is used to notify of leadership changes
+	//leader权限变动通知
 	leaderCh chan bool
 
 	// leaderState used only while state is leader
+	//如果是leader的话  leaderstate保存leader的信息
 	leaderState leaderState
 
 	// candidateFromLeadershipTransfer is used to indicate that this server became
 	// candidate because the leader tries to transfer leadership. This flag is
 	// used in RequestVoteRequest to express that a leadership transfer is going
 	// on.
+	//表示本节点变成candidate
 	candidateFromLeadershipTransfer bool
 
 	// Stores our local server ID, used to avoid sending RPCs to ourself
+	//本node的server id
 	localID ServerID
 
 	// Stores our local addr
+	//本node的服务地址
 	localAddr ServerAddress
 
 	// Used for our logging
+	//日志
 	logger hclog.Logger
 
 	// LogStore provides durable storage for logs
+	//用于保存发过来的日志
 	logs LogStore
 
 	// Used to request the leader to make configuration changes.
+	//发送给leader 改变配置
 	configurationChangeCh chan *configurationChangeFuture
 
 	// Tracks the latest configuration and latest committed configuration from
@@ -203,19 +218,23 @@ type Raft struct {
 // One sane approach is to bootstrap a single server with a configuration
 // listing just itself as a Voter, then invoke AddVoter() on it to add other
 // servers to the cluster.
+//开始第一次启动集群,用现有的配置初始化一个集群,以后的节点要通过AddVoter增加到集群
 func BootstrapCluster(conf *Config, logs LogStore, stable StableStore,
 	snaps SnapshotStore, trans Transport, configuration Configuration) error {
 	// Validate the Raft server config.
+	//校验配置是否OK
 	if err := ValidateConfig(conf); err != nil {
 		return err
 	}
 
 	// Sanity check the Raft peer configuration.
+	//检测配置中的其他节点的配置是否合法
 	if err := checkConfiguration(configuration); err != nil {
 		return err
 	}
 
 	// Make sure the cluster is in a clean state.
+	//确定我们现在的状态是没有启动过
 	hasState, err := HasExistingState(logs, stable, snaps)
 	if err != nil {
 		return fmt.Errorf("failed to check for existing state: %v", err)
@@ -225,11 +244,13 @@ func BootstrapCluster(conf *Config, logs LogStore, stable StableStore,
 	}
 
 	// Set current term to 1.
+	//将当前的任期设置成1
 	if err := stable.SetUint64(keyCurrentTerm, 1); err != nil {
 		return fmt.Errorf("failed to save current term: %v", err)
 	}
 
 	// Append configuration entry to log.
+	//将当前的集群配置保存到日志中 最为第一个任期的第一条日志
 	entry := &Log{
 		Index: 1,
 		Term:  1,
@@ -276,14 +297,18 @@ func BootstrapCluster(conf *Config, logs LogStore, stable StableStore,
 // leader, this can be used to inject a new configuration with that server as
 // the sole voter, and then join up other new clean-state peer servers using
 // the usual APIs in order to bring the cluster back into a known state.
+// 恢复集群 典型的处理方式是:关闭所有的server  用统一个configuration去调用RecoverCluster ,然后在启动
+//如果要将一个server设置成leader, 需要用将那个节点设置为单一的竞争者,然后将其他的节点加入调用api加入到这个集群
 func RecoverCluster(conf *Config, fsm FSM, logs LogStore, stable StableStore,
 	snaps SnapshotStore, trans Transport, configuration Configuration) error {
 	// Validate the Raft server config.
+	//检验 配置是否ok
 	if err := ValidateConfig(conf); err != nil {
 		return err
 	}
 
 	// Sanity check the Raft peer configuration.
+	//检验配置中各个节点的配置是否OK
 	if err := checkConfiguration(configuration); err != nil {
 		return err
 	}
@@ -293,6 +318,7 @@ func RecoverCluster(conf *Config, fsm FSM, logs LogStore, stable StableStore,
 	// expect data to be there and it's not. By refusing, we force them
 	// to show intent to start a cluster fresh by explicitly doing a
 	// bootstrap, rather than quietly fire up a fresh cluster here.
+	//我们不从一个没有任何状态的集群中恢复
 	if hasState, err := HasExistingState(logs, stable, snaps); err != nil {
 		return fmt.Errorf("failed to check for existing state: %v", err)
 	} else if !hasState {
@@ -300,6 +326,7 @@ func RecoverCluster(conf *Config, fsm FSM, logs LogStore, stable StableStore,
 	}
 
 	// Attempt to restore any snapshots we find, newest to oldest.
+	//找到镜像中最新的任期和最新的日志index
 	var (
 		snapshotIndex  uint64
 		snapshotTerm   uint64
@@ -316,7 +343,7 @@ func RecoverCluster(conf *Config, fsm FSM, logs LogStore, stable StableStore,
 			// couldn't open any snapshots.
 			continue
 		}
-
+		//从镜像读取数据到FSM
 		err = fsm.Restore(source)
 		// Close the source after the restore has completed
 		source.Close()
@@ -324,21 +351,24 @@ func RecoverCluster(conf *Config, fsm FSM, logs LogStore, stable StableStore,
 			// Same here, skip and try the next one.
 			continue
 		}
-
+		//按照index+term排序了,找到一个就可以break
 		snapshotIndex = snapshot.Index
 		snapshotTerm = snapshot.Term
 		break
 	}
+	//镜像全部是坏掉????
 	if len(snapshots) > 0 && (snapshotIndex == 0 || snapshotTerm == 0) {
 		return fmt.Errorf("failed to restore any of the available snapshots")
 	}
 
 	// The snapshot information is the best known end point for the data
 	// until we play back the Raft log entries.
+	//找到我们已经处理最后的日志的任期和日志index
 	lastIndex := snapshotIndex
 	lastTerm := snapshotTerm
 
 	// Apply any Raft log entries past the snapshot.
+	//将那些还没有落地到镜像的日志 去除然后在状态机上执行
 	lastLogIndex, err := logs.LastIndex()
 	if err != nil {
 		return fmt.Errorf("failed to find last log: %v", err)
@@ -357,6 +387,7 @@ func RecoverCluster(conf *Config, fsm FSM, logs LogStore, stable StableStore,
 
 	// Create a new snapshot, placing the configuration in as if it was
 	// committed at index 1.
+	//将此镜像落地
 	snapshot, err := fsm.Snapshot()
 	if err != nil {
 		return fmt.Errorf("failed to snapshot FSM: %v", err)
@@ -375,6 +406,7 @@ func RecoverCluster(conf *Config, fsm FSM, logs LogStore, stable StableStore,
 
 	// Compact the log so that we don't get bad interference from any
 	// configuration change log entries that might be there.
+	//将已经落地的日志从日志存储中删除
 	firstLogIndex, err := logs.FirstIndex()
 	if err != nil {
 		return fmt.Errorf("failed to get first log index: %v", err)
@@ -389,6 +421,7 @@ func RecoverCluster(conf *Config, fsm FSM, logs LogStore, stable StableStore,
 // GetConfiguration returns the configuration of the Raft cluster without
 // starting a Raft instance or connecting to the cluster
 // This function has identical behavior to Raft.GetConfiguration
+//得到当前集群的配置信息
 func GetConfiguration(conf *Config, fsm FSM, logs LogStore, stable StableStore,
 	snaps SnapshotStore, trans Transport) (Configuration, error) {
 	conf.skipStartup = true
@@ -407,6 +440,7 @@ func GetConfiguration(conf *Config, fsm FSM, logs LogStore, stable StableStore,
 // knowledge of a current term, or any snapshots).
 func HasExistingState(logs LogStore, stable StableStore, snaps SnapshotStore) (bool, error) {
 	// Make sure we don't have a current term.
+	//从持久存储中得到集群的状态保存
 	currentTerm, err := stable.GetUint64(keyCurrentTerm)
 	if err == nil {
 		if currentTerm > 0 {
@@ -419,6 +453,7 @@ func HasExistingState(logs LogStore, stable StableStore, snaps SnapshotStore) (b
 	}
 
 	// Make sure we have an empty log.
+	//从日志保存到得到最新的index
 	lastIndex, err := logs.LastIndex()
 	if err != nil {
 		return false, fmt.Errorf("failed to get last log index: %v", err)
@@ -428,6 +463,7 @@ func HasExistingState(logs LogStore, stable StableStore, snaps SnapshotStore) (b
 	}
 
 	// Make sure we have no snapshots
+	//确定我们也没有镜像
 	snapshots, err := snaps.List()
 	if err != nil {
 		return false, fmt.Errorf("failed to list snapshots: %v", err)
@@ -443,13 +479,16 @@ func HasExistingState(logs LogStore, stable StableStore, snaps SnapshotStore) (b
 // as implementations of various interfaces that are required. If we have any
 // old state, such as snapshots, logs, peers, etc, all those will be restored
 // when creating the Raft node.
+//创建一个raft节点
 func NewRaft(conf *Config, fsm FSM, logs LogStore, stable StableStore, snaps SnapshotStore, trans Transport) (*Raft, error) {
 	// Validate the configuration.
+	//验证配置
 	if err := ValidateConfig(conf); err != nil {
 		return nil, err
 	}
 
 	// Ensure we have a LogOutput.
+	//给这个raft节点一个日志输出
 	var logger hclog.Logger
 	if conf.Logger != nil {
 		logger = conf.Logger
@@ -466,18 +505,21 @@ func NewRaft(conf *Config, fsm FSM, logs LogStore, stable StableStore, snaps Sna
 	}
 
 	// Try to restore the current term.
+	//得到状态文件中保存的当前的任期
 	currentTerm, err := stable.GetUint64(keyCurrentTerm)
 	if err != nil && err.Error() != "not found" {
 		return nil, fmt.Errorf("failed to load current term: %v", err)
 	}
 
 	// Read the index of the last log entry.
+	//从日志中得到当前的日志inxex
 	lastIndex, err := logs.LastIndex()
 	if err != nil {
 		return nil, fmt.Errorf("failed to find last log: %v", err)
 	}
 
 	// Get the last log entry.
+	//去除最后的日志
 	var lastLog Log
 	if lastIndex > 0 {
 		if err = logs.GetLog(lastIndex, &lastLog); err != nil {
@@ -486,6 +528,7 @@ func NewRaft(conf *Config, fsm FSM, logs LogStore, stable StableStore, snaps Sna
 	}
 
 	// Make sure we have a valid server address and ID.
+	//当前节点的地址和编号 协议版本号
 	protocolVersion := conf.ProtocolVersion
 	localAddr := ServerAddress(trans.LocalAddr())
 	localID := conf.LocalID
@@ -526,18 +569,22 @@ func NewRaft(conf *Config, fsm FSM, logs LogStore, stable StableStore, snaps Sna
 	}
 
 	// Initialize as a follower.
+	//将本节点设置成follower
 	r.setState(Follower)
 
 	// Restore the current term and the last log.
+	//设置任期和日志的任期和index
 	r.setCurrentTerm(currentTerm)
 	r.setLastLog(lastLog.Index, lastLog.Term)
 
 	// Attempt to restore a snapshot if there are any.
+	//如果有镜像的话 从镜像读取数据
 	if err := r.restoreSnapshot(); err != nil {
 		return nil, err
 	}
 
 	// Scan through the log for any configuration change entries.
+	//将日志中涉及Configuration变动的条目 执行一遍
 	snapshotIndex, _ := r.getLastSnapshot()
 	for index := snapshotIndex + 1; index <= lastLog.Index; index++ {
 		var entry Log
@@ -554,6 +601,7 @@ func NewRaft(conf *Config, fsm FSM, logs LogStore, stable StableStore, snaps Sna
 	// Setup a heartbeat fast-path to avoid head-of-line
 	// blocking where possible. It MUST be safe for this
 	// to be called concurrently with a blocking RPC.
+	//开始心跳调用
 	trans.SetHeartbeatHandler(r.processHeartbeat)
 
 	if conf.skipStartup {

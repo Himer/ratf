@@ -65,6 +65,7 @@ func (r *Raft) checkRPCHeader(rpc RPC) error {
 
 // getSnapshotVersion returns the snapshot version that should be used when
 // creating snapshots, given the protocol version in use.
+//创建镜像的时候的版本号, 现在呢只有一个版本号就是1
 func getSnapshotVersion(protocolVersion ProtocolVersion) SnapshotVersion {
 	// Right now we only have two versions and they are backwards compatible
 	// so we don't need to look at the protocol version.
@@ -1218,10 +1219,12 @@ func (r *Raft) processRPC(rpc RPC) {
 // processHeartbeat is a special handler used just for heartbeat requests
 // so that they can be fast-pathed if a transport supports it. This must only
 // be called from the main thread.
+//处理心跳请求
 func (r *Raft) processHeartbeat(rpc RPC) {
 	defer metrics.MeasureSince([]string{"raft", "rpc", "processHeartbeat"}, time.Now())
 
 	// Check if we are shutdown, just ignore the RPC
+	//判断是否已经关闭了
 	select {
 	case <-r.shutdownCh:
 		return
@@ -1229,6 +1232,7 @@ func (r *Raft) processHeartbeat(rpc RPC) {
 	}
 
 	// Ensure we are only handling a heartbeat
+	//处理心跳rpc请求
 	switch cmd := rpc.Command.(type) {
 	case *AppendEntriesRequest:
 		r.appendEntries(rpc, cmd)
@@ -1240,6 +1244,9 @@ func (r *Raft) processHeartbeat(rpc RPC) {
 
 // appendEntries is invoked when we get an append entries RPC call. This must
 // only be called from the main thread.
+//appendEntries 当我们接收到一个rpc请求的时候 调用此换上
+//每个rpc有个RespChan chan<- RPCResponse填充返回数据
+//服务端正在关注RespChan取得结果
 func (r *Raft) appendEntries(rpc RPC, a *AppendEntriesRequest) {
 	defer metrics.MeasureSince([]string{"raft", "rpc", "appendEntries"}, time.Now())
 	// Setup a response
@@ -1256,12 +1263,15 @@ func (r *Raft) appendEntries(rpc RPC, a *AppendEntriesRequest) {
 	}()
 
 	// Ignore an older term
+	//扔掉老的任期的rpc请求
 	if a.Term < r.getCurrentTerm() {
 		return
 	}
 
 	// Increase the term if we see a newer one, also transition to follower
 	// if we ever get an appendEntries call
+	//如果这个rpc的任期比我们的大,我们变成Follower并设置现在的任期为老的任期,
+	// 以后会调用appendEntries进行数据同步
 	if a.Term > r.getCurrentTerm() || r.getState() != Follower {
 		// Ensure transition to follower
 		r.setState(Follower)
@@ -1270,6 +1280,7 @@ func (r *Raft) appendEntries(rpc RPC, a *AppendEntriesRequest) {
 	}
 
 	// Save the current leader
+	//设置rpc请求中带有的leader信息
 	r.setLeader(ServerAddress(r.trans.DecodePeer(a.Leader)))
 
 	// Verify the last log entry
